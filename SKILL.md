@@ -232,14 +232,16 @@ If only an existing YAML is provided, place it at `C:\ProgramData\mihomo\config.
 ### 3. Patch (reuse scripts/mihomo-patch.py — it is cross-platform Python)
 
 ```powershell
-python.exe "C:\ProgramData\mihomo\patch.py" "C:\ProgramData\mihomo\config.yaml" | Out-File -Encoding utf8 "C:\ProgramData\mihomo\config.yaml.tmp"
+python.exe "C:\ProgramData\mihomo\mihomo-patch.py" "C:\ProgramData\mihomo\config.yaml" | Out-File -Encoding utf8 "C:\ProgramData\mihomo\config.yaml.tmp"
 Move-Item -Force "C:\ProgramData\mihomo\config.yaml.tmp" "C:\ProgramData\mihomo\config.yaml"
 & "C:\ProgramData\mihomo\bin\mihomo.exe" -t -d "C:\ProgramData\mihomo"
 ```
 
-The same `scripts/mihomo-patch.py`, `scripts/update-mihomo-sub.sh` (adapt to .ps1), `scripts/mihomo-web.py`
-are used — they are platform-agnostic Python/shell pairs. On Windows the Agent writes an equivalent
-`update.ps1` and installs a scheduled task instead of cron.
+Ship the cross-platform `scripts/` files into `C:\ProgramData\mihomo\` ready-to-run as-is:
+`mihomo-patch.py`, `mihomo-web.py` and `update-mihomo-sub.ps1` require no adaptation. The remaining
+`scripts/` files (`update-mihomo-sub.sh`, `mihomo-board`, `mihomo.service`, `mihomo-web.service`)
+are Linux-only and are NOT copied on Windows. Install a scheduled task for `update-mihomo-sub.ps1`
+instead of cron.
 
 ### 4. Run + service (NSSM) + scheduled task
 
@@ -252,7 +254,7 @@ are used — they are platform-agnostic Python/shell pairs. On Windows the Agent
 & "C:\ProgramData\mihomo\bin\nssm.exe" start MihomoWeb
 
 # daily update at 04:00 as SYSTEM (equivalent of cron)
-schtasks /create /tn "mihomo-update" /tr "powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\mihomo\update.ps1" /sc daily /st 04:30 /ru SYSTEM /f
+schtasks /create /tn "mihomo-update" /tr "powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\mihomo\update-mihomo-sub.ps1" /sc daily /st 04:30 /ru SYSTEM /f
 
 # firewall allow (if dialog was dismissed) — NetFirewallRule:
 New-NetFirewallRule -DisplayName "mihomo" -Direction Inbound -Protocol TCP -LocalPort 7890,9090 -Action Allow | Out-Null
