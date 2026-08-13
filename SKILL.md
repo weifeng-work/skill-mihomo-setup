@@ -1,6 +1,6 @@
 ---
 name: mihomo-setup
-description: Use ONLY when the user wants to install, deploy, reconfigure, or troubleshoot a Mihomo (Clash Meta) proxy on Linux. Keywords: mihomo, clash, clash-meta, 代理, 科学上网, 订阅, 订阅链接, TUN, 透明代理, 节点优选, 热加载, proxy. Covers full turnkey deployment: binary install (incl. CPU-v3 and GFW workarounds), subscription auto-pull with hot reload, country-priority node selection, TUN global mode, systemd services, cron updates, and the web/terminal monitoring panels.
+description: Use ONLY when the user wants to install, deploy, reconfigure, or troubleshoot a Mihomo (Clash Meta) proxy on Linux, or the Agent is running on Windows (PowerShell). Keywords: mihomo, clash, clash-meta, 代理, 科学上网, 订阅, 订阅链接, TUN, 透明代理, 节点优选, 热加载, proxy, windows, powershell. Covers full turnkey deployment: binary install (incl. CPU-v3 and GFW workarounds), subscription auto-pull with hot reload, country-priority node selection, TUN global mode, systemd (Linux) / scheduled-task + service (Windows), cron updates, and the web/terminal monitoring panels. PRINCIPLE: the Agent performs ALL setup steps and only ever guides the user through (a) providing a subscription URL or YAML and (b) clicking OS confirmation dialogs — never asks the user to manually edit files, download binaries, or create services.
 ---
 
 # Mihomo (Clash Meta) Turnkey Deployment
@@ -169,3 +169,107 @@ curl -s --noproxy '*' --max-time 15 -o /dev/null -w "%{http_code}\n" https://www
   into a real newline and breaks the embedded JS. Use `String.fromCharCode(10)` in the JS instead. Add
   `Cache-Control: no-store` to the panel's HTML responses so stale pages don't linger.
 - The v3-CPU binary refuses to start on older CPUs; always confirm CPU flags before choosing the asset.
+---
+
+## Windows deployment (PowerShell) — Agent-led, guided UX
+
+Use this flow when the target machine is Windows. The SAME universal output is built
+(Linux section produces systemd+cron; this section produces a Windows service + scheduled task).
+
+### 0. Tell the user the prerequisites FIRST (before running anything)
+
+State these clearly up front. The Agent does ALL setup work; the user only cooperates on:
+
+1. **Provide a subscription URL or a valid YAML** — the hard prerequisite (same as Linux).
+2. **Run the Agent in an ADMIN terminal.** Check for admin: if false, print the exact menu path
+   ("Right-click the terminal / Windows PowerShell → Run as administrator") and pause until the
+   user restarts as admin. Do not attempt privileged steps without admin.
+3. **Click OS confirmation dialogs when they appear.** Expected (automatic, one-time):
+   - **wintun/TUN driver install** — Windows Kernel-Mode driver / unsigned-driver prompt → user clicks "Install/Allow".
+   - **Windows Defender Firewall** — first bind to 7890/9090 prompts "Allow access" → user clicks Allow (we also add explicit rules, but the dialog may still appear).
+   - **SmartScreen/Defender** downloads warning on the downloaded binaries → user clicks "More info → Run anyway" (or Allow).
+4. Nothing else is manual. If a step would ever require manual intervention beyond the above,
+   the Agent must stop and explain, then ask permission — never silently require user edits.
+
+Detection the Agent runs first:
+
+```powershell
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$arch = $env:PROCESSOR_ARCHITECTURE            # AMD64 / ARM64
+(Get-CimInstance Win32_Processor).VMMonitorModeExtensions   # AVX2 not directly exposed; use the -compatible binary to be safe
+$PSVersionTable.PSVersion
+python --version          # need Python 3 (patch + web panel); if missing: winget install -e --id Python.Python.3.12
+```
+
+### 1. Fetch assets (GFW mirrors same as Linux)
+
+Use `curl.exe` (ships with Windows 10+) or `Invoke-WebRequest`.
+
+```powershell
+New-Item -ItemType Directory -Force -Path "C:\ProgramData\mihomo" | Out-Null
+$base="https://ghfast.top/https://github.com/MetaCubeX/mihomo/releases/download/v1.18.7"
+curl.exe -L -o "$env:TEMP\mihomo.zip" "$base/mihomo-windows-amd64-compatible-v1.18.7.zip"
+Expand-Archive -Path "$env:TEMP\mihomo.zip" -DestinationPath "C:\ProgramData\mihomo\bin" -Force
+curl.exe -L -o "C:\ProgramData\mihomo\geoip.metadb" "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
+curl.exe -L -o "C:\ProgramData\mihomo\geosite.dat"  "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+curl.exe -L -o "$env:TEMP\wintun.zip" "https://ghfast.top/https://github.com/MetaCubeX/mihomo/releases/download/wintun-0.14.1/wintun-0.14.1.zip"
+Expand-Archive -Path "$env:TEMP\wintun.zip" -DestinationPath "C:\ProgramData\mihomo\wintun" -Force
+Copy-Item "C:\ProgramData\mihomo\wintun\wintun\bin\amd64\wintun.dll" "C:\ProgramData\mihomo\wintun.dll" -Force
+```
+
+### 2. Subscription or existing YAML (hard prerequisite — same rule as Linux)
+
+Pull with `curl.exe -L -A "clash-verge/v1.3.8" "<SUB_URL>" -o "C:\ProgramData\mihomo\config.yaml"`,
+then verify `Select-String -Path ... -Pattern '^proxies:'`, and a listen port line.
+If only an existing YAML is provided, place it at `C:\ProgramData\mihomo\config.yaml` and validate it has `proxies:` + `external-controller:`.
+
+### 3. Patch (reuse scripts/mihomo-patch.py — it is cross-platform Python)
+
+```powershell
+python.exe "C:\ProgramData\mihomo\patch.py" "C:\ProgramData\mihomo\config.yaml" | Out-File -Encoding utf8 "C:\ProgramData\mihomo\config.yaml.tmp"
+Move-Item -Force "C:\ProgramData\mihomo\config.yaml.tmp" "C:\ProgramData\mihomo\config.yaml"
+& "C:\ProgramData\mihomo\bin\mihomo.exe" -t -d "C:\ProgramData\mihomo"
+```
+
+The same `scripts/mihomo-patch.py`, `scripts/update-mihomo-sub.sh` (adapt to .ps1), `scripts/mihomo-web.py`
+are used — they are platform-agnostic Python/shell pairs. On Windows the Agent writes an equivalent
+`update.ps1` and installs a scheduled task instead of cron.
+
+### 4. Run + service (NSSM) + scheduled task
+
+```powershell
+# service (auto-restart) via NSSM — NSSM binary fetched from mirror; register:
+& "C:\ProgramData\mihomo\bin\nssm.exe" install Mihomo "C:\ProgramData\mihomo\bin\mihomo.exe" -d "C:\ProgramData\mihomo"
+& "C:\ProgramData\mihomo\bin\nssm.exe" set Mihomo AppExit Default Restart
+& "C:\ProgramData\mihomo\bin\nssm.exe" start Mihomo
+& "C:\ProgramData\mihomo\bin\nssm.exe" install MihomoWeb "python.exe" "C:\ProgramData\mihomo\mihomo-web.py"
+& "C:\ProgramData\mihomo\bin\nssm.exe" start MihomoWeb
+
+# daily update at 04:00 as SYSTEM (equivalent of cron)
+schtasks /create /tn "mihomo-update" /tr "powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\mihomo\update.ps1" /sc daily /st 04:30 /ru SYSTEM /f
+
+# firewall allow (if dialog was dismissed) — NetFirewallRule:
+New-NetFirewallRule -DisplayName "mihomo" -Direction Inbound -Protocol TCP -LocalPort 7890,9090 -Action Allow | Out-Null
+```
+
+### 5. Verify (same checklist, PowerShell forms)
+
+```powershell
+Get-Service Mihomo,MihomoWeb | Select-Object Status,Name
+curl.exe -s http://127.0.0.1:9090/version
+curl.exe -s http://127.0.0.1:9090/proxies | Select-String '选择节点'   # or use python to print the auto group's now
+curl.exe -s --noproxy "*" -o NUL -w "%{http_code}" https://www.google.com/generate_204   # expect 204 over TUN
+```
+
+Also verify the health banner on the web panel at http://127.0.0.1:8080 shows "代理连接中".
+TUN kill switch = stopping the Mihomo service restores full-direct (tun rules get torn down).
+
+### 6. Windows vendor-specific notes for the Agent to explain
+
+- Subscriptions, geo data, wintun, NSSM all fetch through the GFW mirror automatically — the user
+  does NOT configure any network/registry setting.
+- If Defender flags the downloaded binaries, guide the user: "More info → Run anyway" (one click only).
+- `ExecutionPolicy`: the Agent calls `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`
+  at process scope so system-wide policy is never changed by the Agent.
+- Everything above is done BY the Agent. Do not instruct the user to create services, schedules,
+  run commands, or edit files — only the three items in section 0 (link/YAML, admin terminal, clicking dialogs).
