@@ -1,6 +1,6 @@
 ---
 name: mihomo-setup
-description: Use ONLY when the user wants to install, deploy, reconfigure, or troubleshoot a Mihomo (Clash Meta) proxy on Linux, or the Agent is running on Windows (PowerShell). Keywords: mihomo, clash, clash-meta, 代理, 科学上网, 订阅, 订阅链接, TUN, 透明代理, 节点优选, 热加载, proxy, windows, powershell. Covers full turnkey deployment: binary install (incl. CPU-v3 and GFW workarounds), subscription auto-pull with hot reload, country-priority node selection, TUN global mode, systemd (Linux) / scheduled-task + service (Windows), cron updates, and the web/terminal monitoring panels. PRINCIPLE: the Agent performs ALL setup steps and only ever guides the user through (a) providing a subscription URL or YAML and (b) clicking OS confirmation dialogs — never asks the user to manually edit files, download binaries, or create services.
+description: Use ONLY when the user wants to install, deploy, reconfigure, or troubleshoot a Mihomo (Clash Meta) proxy on Linux, or the Agent is running on Windows (PowerShell). Keywords: mihomo, clash, clash-meta, 代理, 科学上网, 订阅, 订阅链接, TUN, 透明代理, 节点优选, 热加载, proxy, windows, powershell. Covers full turnkey deployment: binary install (incl. CPU-v3 and GFW workarounds), subscription auto-pull with hot reload, country-priority node selection, TUN global mode, systemd (Linux) / scheduled-task + service (Windows), cron updates, and the web/terminal monitoring panels. OS-DETECTION (MANDATORY): the Agent must detect the host OS FIRST and run ONLY the chapter matching it — Linux → the bash/systemd/cron flow; Windows → the PowerShell/NSSM/scheduled-task flow. It must NEVER execute the other OS's commands on a mismatched host (e.g. no systemctl/schtasks confusion). Cross-platform Python scripts (mihomo-patch.py, mihomo-web.py) run on both. PRINCIPLE: the Agent performs ALL setup steps and only ever guides the user through (a) providing a subscription URL or YAML and (b) clicking OS confirmation dialogs — never asks the user to manually edit files, download binaries, or create services.
 ---
 
 # Mihomo (Clash Meta) Turnkey Deployment
@@ -33,7 +33,11 @@ If NEITHER is available, explain to the user that a subscription URL or YAML is 
 mandatory prerequisite (it contains the actual node/proxy servers) and stop — do not invent
 placeholders or fabricate config.
 
-## Running order
+## Linux deployment (bash/systemd) — for Linux hosts ONLY
+
+Use this flow when the target machine is Linux (Debian/Ubuntu tested). All commands in this
+chapter are bash/systemd/cron. On Windows, follow the "Windows deployment" chapter instead —
+never run this chapter's commands there. Cross-platform Python scripts are shared.
 
 ### 0. Prechecks (run first, adapt path if already installed)
 
@@ -175,6 +179,8 @@ curl -s --noproxy '*' --max-time 15 -o /dev/null -w "%{http_code}\n" https://www
 
 Use this flow when the target machine is Windows. The SAME universal output is built
 (Linux section produces systemd+cron; this section produces a Windows service + scheduled task).
+On Linux, follow the "Linux deployment" chapter instead — this chapter's PowerShell commands are
+for Windows hosts ONLY and must never be executed on Linux.
 
 ### 0. Tell the user the prerequisites FIRST (before running anything)
 
