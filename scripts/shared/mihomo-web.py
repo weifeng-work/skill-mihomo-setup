@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mihomo Web 面板：状态/节点/延迟/控制开关 (仅 127.0.0.1)"""
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -168,16 +169,63 @@ def run(cmd, sudo=False):
         return (1, str(e))
 
 
-def status():
-    cfg = hamo("/configs")
-    proxies = hamo("/proxies").get("proxies", {})
-    svc = run(["systemctl", "show", "mihomo", "-p", "ActiveState",
+IS_WIN = os.name == "nt"
+SVC = "Mihomo" if IS_WIN else "mihomo"
+
+
+def win_svc_query():
+    rc, q = run(["sc", "query", "Mihomo"])
+    active = rc == 0 and "RUNNING" in q
+    rc2, c = run(["sc", "qc", "Mihomo"])
+    auto = rc2 == 0 and any(
+        ln.strip().startswith("START_TYPE") and "AUTO_START" in ln
+        for ln in c.splitlines()
+    )
+    return active, auto
+
+
+def svc_status():
+    if IS_WIN:
+        active, auto = win_svc_query()
+        return {"ActiveState": "active" if active else "inactive",
+                "NRestarts": "?",
+                "UnitFileState": "enabled" if auto else "disabled"}
+    raw = run(["systemctl", "show", "mihomo", "-p", "ActiveState",
                "-p", "NRestarts", "-p", "UnitFileState"])[1]
     d = {}
-    for ln in svc.splitlines():
+    for ln in raw.splitlines():
         if "=" in ln:
             k, vv = ln.split("=", 1)
             d[k] = vv
+    return d
+
+
+def svc_control(action):
+    if IS_WIN:
+        if action == "start":
+            run(["nssm", "start", "Mihomo"])
+        elif action == "stop":
+            run(["nssm", "stop", "Mihomo"])
+        elif action == "enable":
+            run(["sc", "config", "Mihomo", "start=", "auto"])
+        elif action == "disable":
+            run(["sc", "config", "Mihomo", "start=", "demand"])
+        return
+    run(["systemctl", action, "mihomo"])
+
+
+def update_sub():
+    if IS_WIN:
+        return run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-File", r"C:\ProgramData\mihomo\update-mihomo-sub.ps1"])
+    return run(["/usr/local/bin/update-mihomo-sub.sh"])
+
+
+def status():
+    cfg = hamo("/configs")
+    proxies = hamo("/proxies").get("proxies", {})
+    svc = svc_status()
+    d = svc
     auto = proxies.get("🚀 自动优选") or proxies.get("🔰 选择节点") or {}
     cur = auto.get("now")
     cands = []
@@ -257,19 +305,19 @@ class H(BaseHTTPRequestHandler):
             self.sendj({"error": "bad request"}, 400)
             return
         if a == "stop":
-            run(["systemctl", "stop", "mihomo"])
+            svc_control("stop")
             self.sendj({"msg": "已停止代理, 当前全直连"})
         elif a == "start":
-            run(["systemctl", "start", "mihomo"])
+            svc_control("start")
             self.sendj({"msg": "已启动代理"})
         elif a == "disable":
-            run(["systemctl", "disable", "mihomo"])
+            svc_control("disable")
             self.sendj({"msg": "已禁用开机自启(服务已停)"})
-            run(["systemctl", "stop", "mihomo"])
+            svc_control("stop")
         elif a == "enable":
-            run(["systemctl", "enable", "mihomo"])
+            svc_control("enable")
             self.sendj({"msg": "已启用开机自启(服务已启动)"})
-            run(["systemctl", "start", "mihomo"])
+            svc_control("start")
         elif a == "mode":
             cfg = hamo("/configs")
             m = cfg.get("mode", "rule")
@@ -282,7 +330,7 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 self.sendj({"error": str(e)}, 500)
         elif a == "update":
-            rc, out = run(["/usr/local/bin/update-mihomo-sub.sh"])
+            rc, out = update_sub()
             self.sendj({"msg": "订阅更新完成" if rc == 0 else "订阅更新失败", "detail": out[-300:]})
         else:
             self.sendj({"error": "unknown action"}, 400)

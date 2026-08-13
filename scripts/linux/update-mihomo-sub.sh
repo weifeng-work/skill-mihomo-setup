@@ -23,7 +23,7 @@ if [ ! -s "$TEMP_RAW" ] || ! grep -q "^proxies:" "$TEMP_RAW"; then
     exit 1
 fi
 
-python3 "$PATCH" "$TEMP_RAW" > "$TEMP_FINAL" || { echo "[$(date)] 错误：本地定制补丁失败，保留原配置。"; exit 1; }
+python3 "$PATCH" "$TEMP_RAW" -o "$TEMP_FINAL" || { echo "[$(date)] 错误：本地定制补丁失败，保留原配置。"; exit 1; }
 
 if "$MIHOMO" -t -f "$TEMP_FINAL" -d /etc/mihomo >/dev/null 2>&1; then
     mv "$TEMP_FINAL" "$CONFIG_PATH"

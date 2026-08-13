@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Patch mihomo config: auto-select node priority (US > SG > TW > JP, no HK) + TUN."""
+"""Patch mihomo config: auto-select node priority (US > SG > TW > JP > HK, last) +
+TUN + sniffer + fake-ip DNS, preserving the subscription's own nameservers.
+
+Writes to the file given by -o/--output (utf-8) to avoid encoding corruption when the
+process is piped through PowerShell; falls back to stdout with force-UTF-8 (fixes the
+GBK UnicodeEncodeError seen on Chinese Windows for emoji group names).
+"""
+import argparse
 import sys
+
 import yaml
 
 
@@ -20,10 +28,51 @@ def country(name):
 
 POOL_ORDER = ["US", "SG", "TW", "JP", "HK"]
 
-if __name__ == "__main__":
-    src = sys.argv[1] if len(sys.argv) > 1 else "/etc/mihomo/config.yaml"
-    cfg = yaml.safe_load(open(src, encoding="utf-8"))
+INJECT_TUN = {
+    "enable": True,
+    "stack": "gvisor",
+    "auto-route": True,
+    "auto-detect-interface": True,
+    "dns-hijack": ["any:53"],
+    "route-address": ["0.0.0.0/0", "::/0"],
+}
 
+INJECT_SNIFFER = {
+    "enable": True,
+    "force-dns-mapping": True,
+    "parse-pure-ip": True,
+    "sniff": {
+        "HTTP": {
+            "ports": [80, 8080, 8880, 2052, 2082, 2086, 2095],
+            "override-destination": True,
+        },
+        "TLS": {"ports": [443, 8443, 2053, 2083, 2087, 2096]},
+        "QUIC": {"ports": [443, 8443]},
+    },
+    "skip-domain": ["+.push.apple.com", "Mijia Cloud"],
+}
+
+FAKE_IP_FILTER = [
+    "*.lan",
+    "*.local",
+    "+.msftconnecttest.com",
+    "+.msftncsi.com",
+    "localhost.ptlogin2.qq.com",
+    "dns.msftncsi.com",
+    "*.time.edu.cn",
+    "*.ntp.org.cn",
+    "+.market.xiaomi.com",
+]
+
+DEFAULT_FALLBACK = ["tls://8.8.8.8", "tls://1.1.1.1", "tls://dns.google"]
+DEFAULT_FALLBACK_FILTER = {"geoip": True, "geoip-code": "CN", "ipcidr": ["240.0.0.0/4"]}
+
+
+def merge_lists(base, extra):
+    return list(dict.fromkeys(base + extra))
+
+
+def patch(cfg):
     pools = {k: [] for k in POOL_ORDER}
     for p in cfg.get("proxies", []):
         c = country(p.get("name", ""))
@@ -57,13 +106,41 @@ if __name__ == "__main__":
             "proxies": (["🚀 自动优选"] if ordered else []) + ordered + ["DIRECT"],
         })
 
-    cfg["tun"] = {
-        "enable": True,
-        "stack": "gvisor",
-        "auto-route": True,
-        "auto-detect-interface": True,
-        "dns-hijack": ["any:53"],
-        "route-address": ["0.0.0.0/0", "::/0"],
-    }
+    cfg.setdefault("tun", {}).update(INJECT_TUN)
+    cfg["tun"] = dict(INJECT_TUN, **cfg["tun"])
 
-    sys.stdout.write(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False, default_flow_style=False))
+    cfg.setdefault("sniffer", {}).update(INJECT_SNIFFER)
+    cfg["sniffer"] = dict(INJECT_SNIFFER, **cfg["sniffer"])
+
+    dns = dict(cfg.get("dns") or {}, enable=True)
+    dns["enhanced-mode"] = "fake-ip"
+    dns.setdefault("fake-ip-range", "198.18.0.1/16")
+    dns["fake-ip-filter"] = merge_lists(dns.get("fake-ip-filter", []), FAKE_IP_FILTER)
+    dns["fallback"] = merge_lists(dns.get("fallback", []), DEFAULT_FALLBACK)
+    dns["fallback-filter"] = {**DEFAULT_FALLBACK_FILTER, **(dns.get("fallback-filter") or {})}
+    cfg["dns"] = dns
+
+    return cfg
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("src", nargs="?", default="/etc/mihomo/config.yaml",
+                    help="input mihomo YAML (subscription or existing config)")
+    ap.add_argument("-o", "--output", default=None,
+                    help="write patched YAML to this file (utf-8). Default: stdout.")
+    args = ap.parse_args()
+
+    cfg = yaml.safe_load(open(args.src, encoding="utf-8"))
+    cfg = patch(cfg)
+    out = yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False, default_flow_style=False)
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(out)
+    else:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+        sys.stdout.write(out)

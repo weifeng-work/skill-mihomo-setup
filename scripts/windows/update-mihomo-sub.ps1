@@ -53,7 +53,7 @@ if (-not (Test-Path $TEMP_RAW) -or (Get-Item $TEMP_RAW).Length -eq 0 -or
 }
 
 Log "应用本地定制补丁..."
-& $python $Patch $TEMP_RAW | Set-Content -Path $TEMP_FINAL -Encoding UTF8
+& $python $Patch $TEMP_RAW -o $TEMP_FINAL
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $TEMP_FINAL)) {
     Log "错误：本地定制补丁失败，保留原配置。"
     exit 1

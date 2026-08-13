@@ -40,7 +40,8 @@ The `scripts/` folder is split by target OS so each platform copies only what it
 ```text
 scripts/
 ├── shared/    # cross-platform — copy & run on BOTH OSes
-│   ├── mihomo-patch.py      # node-policy + TUN patcher (python3, needs python3-yaml)
+│   ├── fetch-assets.py      # downloader: binary + geo + wintun + nssm, mirror fallback + validation
+│   ├── mihomo-patch.py      # node-policy + TUN + sniffer + fake-ip DNS patcher (needs python3-yaml)
 │   └── mihomo-web.py        # web panel (python3, http://127.0.0.1:8080)
 ├── linux/     # Linux ONLY — never copy these on Windows
 │   ├── update-mihomo-sub.sh # bash update pipeline (pull→patch→validate→hot-reload)
@@ -75,32 +76,42 @@ grep -o -m1 'avx2\|avx512' /proc/cpuinfo | sort -u   # v3 microarch check
 - `mihomo -v` printing *"can only be run on AMD64 processors with v3"* ⟹ CPU is v1/v2: MUST use the **`-compatible`** binary variant (release asset `mihomo-linux-amd64-compatible-<ver>.gz`).
 - If `curl github.com` returns `000` (GFW), fetch all GitHub-hosted assets through a proxy mirror such as **`https://ghfast.top/<full-github-url>`**. The direct subscription host is usually reachable.
 
-### 1. Install binary
+### 1. Install binary + geo data (recommended: `scripts/shared/fetch-assets.py`, one command)
+
+```bash
+python3 scripts/shared/fetch-assets.py --os linux --dir /etc/mihomo
+```
+
+It downloads the mihomo binary (CPU build via `--cpu avx2` vs default `compatible`),
+`geoip.metadb` and `geosite.dat`; tries GitHub direct then the GFW mirror per asset,
+validates minimum size + magic bytes, and never replaces a good file with a failed
+download (re-run fills gaps, or use `--force`). Then:
+
+```bash
+sudo cp /etc/mihomo/mihomo /usr/local/bin/mihomo && sudo chmod 755 /usr/local/bin/mihomo && mihomo -v
+```
+
+Manual fallback (identical URLs) for power users:
 
 ```bash
 cd /tmp/opencode
 curl -sL -o mihomo.gz "https://ghfast.top/https://github.com/MetaCubeX/mihomo/releases/download/v1.18.7/mihomo-linux-amd64-compatible-v1.18.7.gz"
 gunzip -f mihomo.gz && file mihomo                      # must be ELF x86-64, statically linked
 sudo install -m 755 mihomo /usr/local/bin/mihomo && mihomo -v
-sudo mkdir -p /etc/mihomo
-```
-
-### 2. Initial config + geo data
-
-```
-sudo cp <downloaded-sub.yaml> /etc/mihomo/config.yaml
-```
-
-The subscription YAML references GeoIP/GeoSite that mihomo tries to download from GitHub (blocked).
-Fetch them through the mirror once and drop them beside the config, or `mihomo -t` will fail:
-
-```bash
-cd /tmp/opencode
 curl -sL -o geoip.metadb "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
 curl -sL -o geosite.dat  "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
-sudo cp geoip.metadb geosite.dat /etc/mihomo/
+sudo mkdir -p /etc/mihomo && sudo cp geoip.metadb geosite.dat /etc/mihomo/
+```
+
+### 2. Initial config
+
+```bash
+sudo cp <downloaded-sub.yaml> /etc/mihomo/config.yaml
 sudo /usr/local/bin/mihomo -t -d /etc/mihomo   # must say "configuration file ... test is successful"
 ```
+
+(GeoIP/GeoSite are NOT fetched at startup — the subscription YAML points at GitHub whose assets
+the GFW blocks, so fetch-assets.py / the manual commands above place them beside the config.)
 
 ### 3. Local customization patch
 
@@ -230,21 +241,39 @@ $PSVersionTable.PSVersion
 python --version          # need Python 3 (patch + web panel); if missing: winget install -e --id Python.Python.3.12
 ```
 
-### 1. Fetch assets (GFW mirrors same as Linux)
+### 1. Fetch assets (recommended: `scripts/shared/fetch-assets.py`)
 
-Use `curl.exe` (ships with Windows 10+) or `Invoke-WebRequest`.
+Run the shared fetcher — it downloads the mihomo binary, `geoip.metadb`, `geosite.dat`
+**and NSSM** to `C:\ProgramData\mihomo\`, with wintun fetched from the official
+`https://www.wintun.net/builds/...` source. It tries GitHub direct then the GFW mirror,
+validates size/ZIP magic, and never overwrites a good file with a failed download
+(`--force` to re-download). Engine wintun/NSSM URLs are NOT GitHub-release links
+(those 404) — they come from wintun.net / nssm.cc.
 
 ```powershell
 New-Item -ItemType Directory -Force -Path "C:\ProgramData\mihomo" | Out-Null
+python.exe "<wherever scripts\shared\fetch-assets.py is>" --os windows --dir "C:\ProgramData\mihomo"
+```
+
+Manual fallback (identical official URLs) for power users:
+
+```powershell
 $base="https://ghfast.top/https://github.com/MetaCubeX/mihomo/releases/download/v1.18.7"
 curl.exe -L -o "$env:TEMP\mihomo.zip" "$base/mihomo-windows-amd64-compatible-v1.18.7.zip"
 Expand-Archive -Path "$env:TEMP\mihomo.zip" -DestinationPath "C:\ProgramData\mihomo\bin" -Force
 curl.exe -L -o "C:\ProgramData\mihomo\geoip.metadb" "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
 curl.exe -L -o "C:\ProgramData\mihomo\geosite.dat"  "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
-curl.exe -L -o "$env:TEMP\wintun.zip" "https://ghfast.top/https://github.com/MetaCubeX/mihomo/releases/download/wintun-0.14.1/wintun-0.14.1.zip"
+curl.exe -L -o "$env:TEMP\wintun.zip" "https://www.wintun.net/builds/wintun-0.14.1.zip"      # official, NOT a GitHub release (404 there)
 Expand-Archive -Path "$env:TEMP\wintun.zip" -DestinationPath "C:\ProgramData\mihomo\wintun" -Force
-Copy-Item "C:\ProgramData\mihomo\wintun\wintun\bin\amd64\wintun.dll" "C:\ProgramData\mihomo\wintun.dll" -Force
+Copy-Item (Get-ChildItem "C:\ProgramData\mihomo\wintun" -Recurse -Filter wintun.dll | Where-Object { $_.FullName -match 'amd64' } | Select-Object -First 1).FullName "C:\ProgramData\mihomo\wintun.dll" -Force
+curl.exe -L -o "$env:TEMP\nssm.zip" "https://nssm.cc/release/nssm-2.24.zip"                  # official, no GitHub mirror for nssm — do not use github.com/kirillkovalenko (404)
+Expand-Archive -Path "$env:TEMP\nssm.zip" -DestinationPath "C:\ProgramData\mihomo\bin" -Force
+Copy-Item (Get-ChildItem "C:\ProgramData\mihomo\bin\nssm-2.24" -Recurse -Filter nssm.exe | Select-Object -First 1).FullName "C:\ProgramData\mihomo\bin\nssm.exe" -Force
 ```
+
+Always verify each download (ZIP must start with `PK`, i.e. `80 75 3 4`; mihomo binary ~10+ MB,
+wintun ~750 KB, nssm ~350 KB) — a failed source can write a tiny "Not Found" body over a good
+file, so check sizes before unpacking. Remove the failed temp file and re-try if too small.
 
 ### 2. Subscription or existing YAML (hard prerequisite — same rule as Linux)
 
