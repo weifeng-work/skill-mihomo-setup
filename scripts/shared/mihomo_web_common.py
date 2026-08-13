@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Mihomo Web 面板：状态/节点/延迟/控制开关 (仅 127.0.0.1)"""
+"""Mihomo Web 面板共享层：平台无关的 UI / API 解析 / HTTP 路由。
+
+跨平台共享，含 HTML/JS 模板、/api/status 数据解析骨架、HTTP 处理器。
+平台相关的服务控制（systemctl / sc / nssm / powershell）由
+scripts/linux/mihomo-web.py 与 scripts/windows/mihomo-web.py 各自注入，
+通过 make_handler(svc_status, svc_control, update_sub) 组合。
+"""
 import json
-import os
-import subprocess
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 API = "http://127.0.0.1:9090"
 TEST_URL = "https://www.gstatic.com/generate_204"
@@ -140,6 +144,7 @@ def hamo(path):
     except Exception:
         return {}
 
+
 _probe = {"cur": None, "t": 0.0, "delay": None}
 
 
@@ -160,71 +165,10 @@ def probe_node(name):
     return d
 
 
-def run(cmd, sudo=False):
-    c = ["sudo"] + cmd if sudo else cmd
-    try:
-        r = subprocess.run(c, capture_output=True, text=True, timeout=30)
-        return (r.returncode, r.stdout + r.stderr)
-    except Exception as e:
-        return (1, str(e))
-
-
-IS_WIN = os.name == "nt"
-SVC = "Mihomo" if IS_WIN else "mihomo"
-
-
-def win_svc_query():
-    rc, q = run(["sc", "query", "Mihomo"])
-    active = rc == 0 and "RUNNING" in q
-    rc2, c = run(["sc", "qc", "Mihomo"])
-    auto = rc2 == 0 and any(
-        ln.strip().startswith("START_TYPE") and "AUTO_START" in ln
-        for ln in c.splitlines()
-    )
-    return active, auto
-
-
-def svc_status():
-    if IS_WIN:
-        active, auto = win_svc_query()
-        return {"ActiveState": "active" if active else "inactive",
-                "NRestarts": "?",
-                "UnitFileState": "enabled" if auto else "disabled"}
-    raw = run(["systemctl", "show", "mihomo", "-p", "ActiveState",
-               "-p", "NRestarts", "-p", "UnitFileState"])[1]
-    d = {}
-    for ln in raw.splitlines():
-        if "=" in ln:
-            k, vv = ln.split("=", 1)
-            d[k] = vv
-    return d
-
-
-def svc_control(action):
-    if IS_WIN:
-        if action == "start":
-            run(["nssm", "start", "Mihomo"])
-        elif action == "stop":
-            run(["nssm", "stop", "Mihomo"])
-        elif action == "enable":
-            run(["sc", "config", "Mihomo", "start=", "auto"])
-        elif action == "disable":
-            run(["sc", "config", "Mihomo", "start=", "demand"])
-        return
-    run(["systemctl", action, "mihomo"])
-
-
-def update_sub():
-    if IS_WIN:
-        return run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                    "-File", r"C:\ProgramData\mihomo\update-mihomo-sub.ps1"])
-    return run(["/usr/local/bin/update-mihomo-sub.sh"])
-
-
-def status():
+def status(svc):
+    """组装 /api/status 响应体。svc 由平台层注入（svc_status() 的 dict）。"""
     cfg = hamo("/configs")
     proxies = hamo("/proxies").get("proxies", {})
-    svc = svc_status()
     d = svc
     auto = proxies.get("🚀 自动优选") or proxies.get("🔰 选择节点") or {}
     cur = auto.get("now")
@@ -269,74 +213,73 @@ def status():
     }
 
 
-class H(BaseHTTPRequestHandler):
-    def log_message(self, *a):
-        pass
+def make_handler(svc_status, svc_control, update_sub):
+    """组装平台专用 HTTP 处理器类。三个回调均为平台层注入。"""
 
-    def sendj(self, obj, code=200):
-        body = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
 
-    def do_GET(self):
-        if self.path in ("/", "/index.html"):
-            body = HTML.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        def sendj(self, obj, code=200):
+            body = json.dumps(obj, ensure_ascii=False).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif self.path == "/api/status":
-            self.sendj(status())
-        else:
-            self.sendj({"error": "not found"}, 404)
 
-    def do_POST(self):
-        if self.path != "/api/control":
-            self.sendj({"error": "not found"}, 404)
-            return
-        try:
-            a = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0)).get("action")
-        except Exception:
-            self.sendj({"error": "bad request"}, 400)
-            return
-        if a == "stop":
-            svc_control("stop")
-            self.sendj({"msg": "已停止代理, 当前全直连"})
-        elif a == "start":
-            svc_control("start")
-            self.sendj({"msg": "已启动代理"})
-        elif a == "disable":
-            svc_control("disable")
-            self.sendj({"msg": "已禁用开机自启(服务已停)"})
-            svc_control("stop")
-        elif a == "enable":
-            svc_control("enable")
-            self.sendj({"msg": "已启用开机自启(服务已启动)"})
-            svc_control("start")
-        elif a == "mode":
-            cfg = hamo("/configs")
-            m = cfg.get("mode", "rule")
-            nxt = MODE_SEQ[(MODE_SEQ.index(m) + 1) % len(MODE_SEQ)] if m in MODE_SEQ else "rule"
+        def do_GET(self):
+            if self.path in ("/", "/index.html"):
+                body = HTML.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/api/status":
+                self.sendj(status(svc_status()))
+            else:
+                self.sendj({"error": "not found"}, 404)
+
+        def do_POST(self):
+            if self.path != "/api/control":
+                self.sendj({"error": "not found"}, 404)
+                return
             try:
-                req = urllib.request.Request(API + "/configs", data=json.dumps({"mode": nxt}).encode(),
-                                             headers={"Content-Type": "application/json"}, method="PATCH")
-                urllib.request.urlopen(req, timeout=5)
-                self.sendj({"msg": f"模式切换为 {nxt}"})
-            except Exception as e:
-                self.sendj({"error": str(e)}, 500)
-        elif a == "update":
-            rc, out = update_sub()
-            self.sendj({"msg": "订阅更新完成" if rc == 0 else "订阅更新失败", "detail": out[-300:]})
-        else:
-            self.sendj({"error": "unknown action"}, 400)
+                a = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0)).get("action")
+            except Exception:
+                self.sendj({"error": "bad request"}, 400)
+                return
+            if a == "stop":
+                svc_control("stop")
+                self.sendj({"msg": "已停止代理, 当前全直连"})
+            elif a == "start":
+                svc_control("start")
+                self.sendj({"msg": "已启动代理"})
+            elif a == "disable":
+                svc_control("disable")
+                self.sendj({"msg": "已禁用开机自启(服务已停)"})
+                svc_control("stop")
+            elif a == "enable":
+                svc_control("enable")
+                self.sendj({"msg": "已启用开机自启(服务已启动)"})
+                svc_control("start")
+            elif a == "mode":
+                cfg = hamo("/configs")
+                m = cfg.get("mode", "rule")
+                nxt = MODE_SEQ[(MODE_SEQ.index(m) + 1) % len(MODE_SEQ)] if m in MODE_SEQ else "rule"
+                try:
+                    req = urllib.request.Request(API + "/configs", data=json.dumps({"mode": nxt}).encode(),
+                                                 headers={"Content-Type": "application/json"}, method="PATCH")
+                    urllib.request.urlopen(req, timeout=5)
+                    self.sendj({"msg": f"模式切换为 {nxt}"})
+                except Exception as e:
+                    self.sendj({"error": str(e)}, 500)
+            elif a == "update":
+                rc, out = update_sub()
+                self.sendj({"msg": "订阅更新完成" if rc == 0 else "订阅更新失败", "detail": out[-300:]})
+            else:
+                self.sendj({"error": "unknown action"}, 400)
 
-
-if __name__ == "__main__":
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
-    print(f"Mihomo Web 面板: http://127.0.0.1:{PORT}")
-    srv.serve_forever()
+    return H

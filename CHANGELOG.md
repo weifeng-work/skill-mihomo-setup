@@ -50,14 +50,15 @@
 
 **根因**: `mihomo-web.py` 的 `status()` 与 `do_POST` 共 7 处硬编码 `systemctl`，Windows 无 systemctl 导致状态误判为 off，开始/停止/自启按钮全部失效。
 
-**修复** (`scripts/shared/mihomo-web.py` 增加跨平台服务层):
-- 新增 `IS_WIN` / `SVC` 判定与 `win_svc_query()`、`svc_status()`、`svc_control()`、`update_sub()`。
-- Linux：保留 `systemctl show/start/stop/enable/disable`。
-- Windows：`sc query/qc Mihomo` 取状态与自启、`nssm start/stop/restart`、`sc config start= auto|demand` 控制自启；
-  订阅更新走 `powershell.exe -File C:\ProgramData\mihomo\update-mihomo-sub.ps1`。
-- `status()` 与 `do_POST` 全部改为调用 `svc_status()` / `svc_control()` / `update_sub()`。
+**修复** (跨平台服务层，单文件 → 平台分层重构):
+- 第一轮：`mihomo-web.py` 内加 `IS_WIN` / `SVC` 判定与 `win_svc_query()`、`svc_status()`、`svc_control()`、`update_sub()` 跨平台分支（Linux systemctl / Windows sc+nssm+powershell）。
+- 第二轮（彻底解耦，按用户建议）：面板拆为共享核心 + 两平台薄层：
+  - `scripts/shared/mihomo_web_common.py` — 平台无关：HTML/JS UI、`hamo`/`probe_node`、`status()` 数据解析、`make_handler(svc_status, svc_control, update_sub)` HTTP 路由器（do_GET/do_POST，含 mode PATCH）。
+  - `scripts/linux/mihomo-web.py` — 仅 systemctl 服务层 + `update-mihomo-sub.sh` 调用。
+  - `scripts/windows/mihomo-web.py` — 仅 sc/nssm/powershell 服务层 + `update-mihomo-sub.ps1` 调用。
+- 两个平台入口都按 `__file__` 相对路径注入 `sys.path`，平铺安装（Linux `/usr/local/bin`、Windows `C:\ProgramData\mihomo`）与仓库树内运行均可用。
 
-**验证**: `python3 -m py_compile` 通过；mock Linux 下 `svc_status()` 返回真实 `systemctl` 状态、`svc_control("start")` 正常执行；`grep` 确认仅剩服务层内的 2 处 `systemctl` 字符串（均位于跨平台分支内）；ps1 / sh 语法校验通过。
+**验证**: `python3 -m py_compile` 三文件通过；双平台单测（mock subprocess）断言 Windows 发 `sc query/qc`、`nssm stop/start`、`sc config start= auto|demand`、`powershell.exe update-mihomo-sub.ps1`；Linux 发 `systemctl show/enable/disable`、`update-mihomo-sub.sh`；do_GET `/api/status` 与 do_POST stop/start/disable/enable/update 全动作经共享路由器正确分发到平台层；**真机端到端**：本机已安装新架构到 `/usr/local/bin` 并重启 `mihomo-web` systemd 服务，`/api/status` 返回 `service=active/enabled/mode=rule`、health=ok，`do_POST start` 使 mihomo 恢复 active。
 
 ---
 

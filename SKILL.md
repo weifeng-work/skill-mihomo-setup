@@ -1,6 +1,7 @@
 ---
 name: mihomo-setup
-description: Use ONLY when the user wants to install, deploy, reconfigure, or troubleshoot a Mihomo (Clash Meta) proxy on Linux, or the Agent is running on Windows (PowerShell). Keywords: mihomo, clash, clash-meta, 代理, 科学上网, 订阅, 订阅链接, TUN, 透明代理, 节点优选, 热加载, proxy, windows, powershell. Covers full turnkey deployment: binary install (incl. CPU-v3 and GFW workarounds), subscription auto-pull with hot reload, country-priority node selection, TUN global mode, systemd (Linux) / scheduled-task + service (Windows), cron updates, and the web/terminal monitoring panels. OS-DETECTION (MANDATORY): the Agent must detect the host OS FIRST and run ONLY the chapter matching it — Linux → the bash/systemd/cron flow; Windows → the PowerShell/NSSM/scheduled-task flow. It must NEVER execute the other OS's commands on a mismatched host (e.g. no systemctl/schtasks confusion). Cross-platform Python scripts (mihomo-patch.py, mihomo-web.py) run on both. PRINCIPLE: the Agent performs ALL setup steps and only ever guides the user through (a) providing a subscription URL or YAML and (b) clicking OS confirmation dialogs — never asks the user to manually edit files, download binaries, or create services.
+description: Use ONLY when the user wants to install, deploy, reconfigure, or troubleshoot a Mihomo (Clash Meta) proxy on Linux, or the Agent is running on Windows (PowerShell). Keywords: mihomo, clash, clash-meta, 代理, 科学上网, 订阅, 订阅链接, TUN, 透明代理, 节点优选, 热加载, proxy, windows, powershell. Covers full turnkey deployment: binary install (incl. CPU-v3 and GFW workarounds), subscription auto-pull with hot reload, country-priority node selection, TUN global mode, systemd (Linux) / scheduled-task + service (Windows), cron updates, and the web/terminal monitoring panels. OS-DETECTION (MANDATORY): the Agent must detect the host OS FIRST and run ONLY the chapter matching it — Linux → the bash/systemd/cron flow; Windows → the PowerShell/NSSM/scheduled-task flow. It must NEVER execute the other OS's commands on a mismatched host (e.g. no systemctl/schtasks confusion). Cross-platform Python scripts (mihomo-patch.py) and the shared panel core (mihomo_web_common.py: UI + router)
+run on both; the running web panel entry (mihomo-web.py) is platform-specific. PRINCIPLE: the Agent performs ALL setup steps and only ever guides the user through (a) providing a subscription URL or YAML and (b) clicking OS confirmation dialogs — never asks the user to manually edit files, download binaries, or create services.
 ---
 
 # Mihomo (Clash Meta) Turnkey Deployment
@@ -42,14 +43,16 @@ scripts/
 ├── shared/    # cross-platform — copy & run on BOTH OSes
 │   ├── fetch-assets.py      # downloader: binary + geo + wintun + nssm, mirror fallback + validation
 │   ├── mihomo-patch.py      # node-policy + TUN + sniffer + fake-ip DNS patcher (needs python3-yaml)
-│   └── mihomo-web.py        # web panel (python3, http://127.0.0.1:8080)
+│   └── mihomo_web_common.py # web panel SHARED core: UI + API parse + router (platform-agnostic)
 ├── linux/     # Linux ONLY — never copy these on Windows
 │   ├── update-mihomo-sub.sh # bash update pipeline (pull→patch→validate→hot-reload)
+│   ├── mihomo-web.py        # web panel Linux entry: systemctl layer + starts shared core
 │   ├── mihomo-board         # curses terminal panel
 │   ├── mihomo.service       # systemd unit
 │   └── mihomo-web.service   # systemd unit
 └── windows/   # Windows ONLY — never copy these on Linux
-    └── update-mihomo-sub.ps1
+    ├── update-mihomo-sub.ps1
+    └── mihomo-web.py        # web panel Windows entry: sc/nssm/powershell layer + starts shared core
 ```
 
 Copy rules (mirror the OS-DETECTION mandate above):
@@ -160,7 +163,8 @@ printf '0 4 * * * root /usr/local/bin/update-mihomo-sub.sh >> /var/log/mihomo-up
 Web panel (systemd service, listens 127.0.0.1:8080, health banner + stop/start/enable/disable/mode/update controls):
 
 ```bash
-sudo install -m 755 scripts/shared/mihomo-web.py /usr/local/bin/mihomo-web.py
+sudo install -m 755 scripts/shared/mihomo_web_common.py /usr/local/bin/mihomo_web_common.py
+sudo install -m 755 scripts/linux/mihomo-web.py /usr/local/bin/mihomo-web.py
 sudo cp scripts/linux/mihomo-web.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now mihomo-web
 ```
@@ -290,10 +294,11 @@ Move-Item -Force "C:\ProgramData\mihomo\config.yaml.tmp" "C:\ProgramData\mihomo\
 ```
 
 Copy the files you need from the layout in "Scripts layout" below. On Windows copy only:
-`scripts/shared/` (`mihomo-patch.py`, `mihomo-web.py`) + `scripts/windows/update-mihomo-sub.ps1`,
-all into `C:\ProgramData\mihomo\` ready-to-run as-is (no adaptation). The `scripts/linux/` subtree
-(`update-mihomo-sub.sh`, `mihomo-board`, `mihomo.service`, `mihomo-web.service`) is Linux-only and
-must NOT be copied on Windows. Install a scheduled task for `update-mihomo-sub.ps1` instead of cron.
+`scripts/shared/` (`mihomo-patch.py`, `mihomo_web_common.py`) + `scripts/windows/`
+(`update-mihomo-sub.ps1`, `mihomo-web.py`), all into `C:\ProgramData\mihomo\` ready-to-run as-is
+(no adaptation). The `scripts/linux/` subtree (`update-mihomo-sub.sh`, `mihomo-web.py`, `mihomo-board`,
+`mihomo.service`, `mihomo-web.service`) is Linux-only and must NOT be copied on Windows. Install a
+scheduled task for `update-mihomo-sub.ps1` instead of cron.
 
 ### 4. Run + service (NSSM) + scheduled task
 
