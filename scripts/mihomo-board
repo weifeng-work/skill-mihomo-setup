@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Mihomo 实时状态面板：节点 / 模式 / 延迟 / 链路故障定位"""
+import curses
+import json
+import subprocess
+import time
+import urllib.parse
+import urllib.request
+
+try:
+    from wcwidth import wcswidth
+except ImportError:
+    def wcswidth(s):
+        return len(s)
+
+API = "http://127.0.0.1:9090"
+TEST_URL = "https://www.gstatic.com/generate_204"
+MODE_SEQ = ["rule", "global", "direct"]
+
+
+def cut(s, maxcol):
+    w = 0
+    out = []
+    for ch in s:
+        cw = max(wcswidth(ch), 0)
+        if w + cw > maxcol:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out), w
+
+
+def put(stdscr, y, x, text, maxcol=0, attr=0):
+    h, w = stdscr.getmaxyx()
+    if y < 0 or y >= h or x < 0 or x >= w:
+        return
+    avail = w - x
+    if maxcol > 0:
+        avail = min(avail, maxcol)
+    if avail <= 0:
+        return
+    s, _ = cut(text, avail)
+    if s:
+        try:
+            stdscr.addstr(y, x, s, attr)
+        except curses.error:
+            pass
+
+
+def api_get(path):
+    try:
+        with urllib.request.urlopen(API + path, timeout=6) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        return {"error": e.code}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def api_patch(body):
+    try:
+        req = urllib.request.Request(API + "/configs", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="PATCH")
+        urllib.request.urlopen(req, timeout=5)
+        return True
+    except Exception:
+        return False
+
+
+def serv_stat():
+    try:
+        out = subprocess.run(["systemctl", "show", "mihomo", "-p", "ActiveState",
+                              "-p", "NRestarts", "-p", "ActiveEnterTimestamp"],
+                             capture_output=True, text=True, timeout=3).stdout
+        return {ln.split("=", 1)[0]: ln.split("=", 1)[1]
+                for ln in out.splitlines() if "=" in ln}
+    except Exception:
+        return {}
+
+
+def probe(name):
+    r = api_get("/proxies/" + urllib.parse.quote(name) +
+                "/delay?timeout=4000&url=" + urllib.parse.quote(TEST_URL, safe=""))
+    d = r.get("delay")
+    if isinstance(d, int) and d > 0:
+        return d, f"{d}ms"
+    msg = r.get("message", str(r.get("error", "?")))
+    return None, f"FAIL:{msg[:20]}"
+
+
+def cpair(lastd):
+    if lastd is None:
+        return curses.color_pair(3)
+    if lastd < 300:
+        return curses.color_pair(1)
+    if lastd < 800:
+        return curses.color_pair(2)
+    return curses.color_pair(3)
+
+
+def main(stdscr):
+    curses.curs_set(0)
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)
+    curses.init_pair(2, curses.COLOR_YELLOW, -1)
+    curses.init_pair(3, curses.COLOR_RED, -1)
+    curses.init_pair(4, curses.COLOR_CYAN, -1)
+
+    last_probe = 0.0
+    dirty = True
+
+    while True:
+        h, w = stdscr.getmaxyx()
+        stdscr.erase()
+        now = time.time()
+
+        cfg = api_get("/configs")
+        proxies = api_get("/proxies").get("proxies", {})
+        svc = serv_stat()
+        ok = isinstance(cfg, dict) and isinstance(proxies, dict)
+
+        put(stdscr, 0, 0, " Mihomo 状态面板 ", 0, curses.color_pair(4) | curses.A_BOLD)
+        if ok:
+            mode = cfg.get("mode", "?")
+            title = f"服务:{svc.get('ActiveState','?')}  重启:{svc.get('NRestarts','?')}  模式:{mode}  {time.strftime('%H:%M:%S')}"
+            attr = 0
+        else:
+            title = " !! 无法连接 Mihomo API, 请检查服务 !!  " + time.strftime("%H:%M:%S")
+            attr = curses.color_pair(3)
+        put(stdscr, 0, 18, title, 0, attr)
+
+        auto = (proxies.get("🚀 自动优选") or (proxies.get("🔰 选择节点") or {})) if ok else {}
+        cur = auto.get("now") if isinstance(auto, dict) else None
+
+        if ok and cur:
+            put(stdscr, 2, 0, "当前节点: ", 0, curses.A_BOLD)
+            if now - last_probe > 15 or dirty:
+                last_probe = now
+                d, lbl = probe(cur)
+                put(stdscr, 2, 10, cur, 0)
+                put(stdscr, 2, 10 + wcswidth(cur) + 2, "延迟 " + lbl, 0, cpair(d))
+            else:
+                hist = auto.get("history") or []
+                lastd = hist[-1].get("delay") if hist else None
+                put(stdscr, 2, 10, cur, 0)
+                put(stdscr, 2, 10 + wcswidth(cur) + 2, f"延迟 {lastd if lastd else '--'}ms", 0, cpair(lastd))
+
+        if ok:
+            fish = proxies.get("🐟 漏网之鱼", {}).get("now", "?")
+            sel = proxies.get("🔰 选择节点", {}).get("now", "?")
+            auto_now = proxies.get("🚀 自动优选", {}).get("now", "?")
+            put(stdscr, 3, 0, f"链  路: 🐟漏网之鱼[{fish}] → 🔰选择节点[{sel}] → 🚀自动优选[{auto_now}]")
+
+        cands = (auto.get("all") if isinstance(auto, dict) else None) or []
+        put(stdscr, 5, 0, f"自动优选顺序 (共{len(cands)}个, 自上而下优先):", 0, curses.A_BOLD)
+        row = 6
+        show = min(14, len(cands))
+        for i, n in enumerate(cands[:show]):
+            if row + i + 1 >= h:
+                break
+            hist = (proxies.get(n) or {}).get("history") or []
+            lastd = hist[-1].get("delay") if hist else None
+            put(stdscr, row + i, 2, n, 26)
+            put(stdscr, row + i, 28, f"{lastd}ms" if lastd else "--", 0, cpair(lastd))
+            if n == cur:
+                put(stdscr, row + i, 33, "◆", 0, curses.color_pair(4))
+        if show < len(cands):
+            put(stdscr, row + show + 1, 2, f"… 其余 {len(cands) - show} 个节点省略")
+
+        groups = [k for k, v in (proxies or {}).items()
+                  if isinstance(v, dict) and v.get("type") in ("Selector", "URLTest", "Fallback")]
+        row = row + show + 3
+        put(stdscr, row, 0, "策略组速览:", 0, curses.A_BOLD)
+        row += 1
+        for g in groups:
+            if row >= h - 2:
+                break
+            v = proxies[g]
+            hist = v.get("history") or []
+            lastd = hist[-1].get("delay") if hist else None
+            put(stdscr, row, 2, g, 24, curses.A_BOLD)
+            put(stdscr, row, 27, str(v.get("now", "")), 26)
+            put(stdscr, row, 54, f"{lastd}ms" if lastd else "--", 0, cpair(lastd))
+            row += 1
+
+        put(stdscr, h - 1, 0, "[q]退出  [r]重测当前节点  [m]切模式(rule/global/direct)  每15s自动刷新",
+            0, curses.color_pair(4))
+
+        stdscr.refresh()
+        dirty = False
+        key = stdscr.getch()
+        if key in (ord("q"), ord("Q"), 27):
+            break
+        elif key in (ord("r"), ord("R")):
+            dirty = True
+        elif key in (ord("m"), ord("M")):
+            nxt = "rule"
+            if ok and cfg.get("mode") in MODE_SEQ:
+                nxt = MODE_SEQ[(MODE_SEQ.index(cfg["mode"]) + 1) % len(MODE_SEQ)]
+            put(stdscr, max(0, h - 3), 0, f"模式切换到 {nxt}...")
+            stdscr.refresh()
+            api_patch({"mode": nxt})
+            dirty = True
+            time.sleep(0.3)
+
+
+if __name__ == "__main__":
+    curses.wrapper(main)

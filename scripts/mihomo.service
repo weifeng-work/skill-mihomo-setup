@@ -1,0 +1,14 @@
+[Unit]
+Description=Mihomo Daemon, A rule-based proxy in Go.
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/mihomo -d /etc/mihomo
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
