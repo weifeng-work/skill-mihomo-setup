@@ -33,6 +33,29 @@ If NEITHER is available, explain to the user that a subscription URL or YAML is 
 mandatory prerequisite (it contains the actual node/proxy servers) and stop — do not invent
 placeholders or fabricate config.
 
+## Scripts layout (scripts/ directory)
+
+The `scripts/` folder is split by target OS so each platform copies only what it needs:
+
+```text
+scripts/
+├── shared/    # cross-platform — copy & run on BOTH OSes
+│   ├── mihomo-patch.py      # node-policy + TUN patcher (python3, needs python3-yaml)
+│   └── mihomo-web.py        # web panel (python3, http://127.0.0.1:8080)
+├── linux/     # Linux ONLY — never copy these on Windows
+│   ├── update-mihomo-sub.sh # bash update pipeline (pull→patch→validate→hot-reload)
+│   ├── mihomo-board         # curses terminal panel
+│   ├── mihomo.service       # systemd unit
+│   └── mihomo-web.service   # systemd unit
+└── windows/   # Windows ONLY — never copy these on Linux
+    └── update-mihomo-sub.ps1
+```
+
+Copy rules (mirror the OS-DETECTION mandate above):
+- **Linux install:** copy `scripts/shared/` + `scripts/linux/`; never touch `scripts/windows/`.
+- **Windows install:** copy `scripts/shared/` + `scripts/windows/`; never touch `scripts/linux/`.
+- Destinations: Linux → `/usr/local/bin`, `/etc/systemd/system`; Windows → `C:\ProgramData\mihomo`.
+
 ## Linux deployment (bash/systemd) — for Linux hosts ONLY
 
 Use this flow when the target machine is Linux (Debian/Ubuntu tested). All commands in this
@@ -81,7 +104,7 @@ sudo /usr/local/bin/mihomo -t -d /etc/mihomo   # must say "configuration file ..
 
 ### 3. Local customization patch
 
-Run `scripts/mihomo-patch.py` on the subscription YAML. It rewrites the config so that every
+Run `scripts/shared/mihomo-patch.py` on the subscription YAML. It rewrites the config so that every
 subscription update keeps your customizations. Current behavior (edit the script to change):
 
 - Builds a `🚀 自动优选` fallback group with node order **US → SG → TW → JP → HK(last)** based on node-name/flag classification; no other countries.
@@ -90,7 +113,7 @@ subscription update keeps your customizations. Current behavior (edit the script
 - `RequestTimeout: 500` on the auto group = a node is considered dead when a health probe exceeds 500 ms, so fallback auto-moves to the next country/candidate. `interval: 120` = health-check cadence.
 
 ```bash
-sudo install -m 755 scripts/mihomo-patch.py /usr/local/bin/mihomo-patch.py
+sudo install -m 755 scripts/shared/mihomo-patch.py /usr/local/bin/mihomo-patch.py
 python3 /usr/local/bin/mihomo-patch.py /etc/mihomo/config.yaml > /tmp/merged.yaml   # or feed the raw sub
 sudo cp /tmp/merged.yaml /etc/mihomo/config.yaml
 sudo /usr/local/bin/mihomo -t -d /etc/mihomo
@@ -101,19 +124,19 @@ TUN also needs the `tun` kernel module and iptables: `sudo modprobe tun && sudo 
 
 ### 4. Update script (keeps customizations forever)
 
-Install `scripts/update-mihomo-sub.sh`. Its pipeline is:
+Install `scripts/linux/update-mihomo-sub.sh`. Its pipeline is:
 **download fresh sub → `mihomo-patch.py` re-apply (preserves node policy + TUN) → `mihomo -t` validate → `mv` → API hot reload (`PUT /configs {"path":...}`)**.
 
 Set `SUB_URL=` inside the script to the user's real subscription URL BEFORE installing.
 
 ```bash
-sudo install -m 755 scripts/update-mihomo-sub.sh /usr/local/bin/update-mihomo-sub.sh
+sudo install -m 755 scripts/linux/update-mihomo-sub.sh /usr/local/bin/update-mihomo-sub.sh
 ```
 
 ### 5. systemd services + cron
 
 ```bash
-sudo cp scripts/mihomo.service /etc/systemd/system/
+sudo cp scripts/linux/mihomo.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now mihomo
 systemctl is-active mihomo
 curl -s http://127.0.0.1:9090/version                     # REST API up
@@ -126,15 +149,15 @@ printf '0 4 * * * root /usr/local/bin/update-mihomo-sub.sh >> /var/log/mihomo-up
 Web panel (systemd service, listens 127.0.0.1:8080, health banner + stop/start/enable/disable/mode/update controls):
 
 ```bash
-sudo install -m 755 scripts/mihomo-web.py /usr/local/bin/mihomo-web.py
-sudo cp scripts/mihomo-web.service /etc/systemd/system/
+sudo install -m 755 scripts/shared/mihomo-web.py /usr/local/bin/mihomo-web.py
+sudo cp scripts/linux/mihomo-web.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now mihomo-web
 ```
 
 Terminal panel (curses, run as user: `mihomo-board`):
 
 ```bash
-sudo install -m 755 scripts/mihomo-board /usr/local/bin/mihomo-board
+sudo install -m 755 scripts/linux/mihomo-board /usr/local/bin/mihomo-board
 ```
 
 Optional UX conveniences: `echo "127.0.0.1 mihomo.local" | sudo tee -a /etc/hosts` and a `.desktop`
@@ -229,7 +252,7 @@ Pull with `curl.exe -L -A "clash-verge/v1.3.8" "<SUB_URL>" -o "C:\ProgramData\mi
 then verify `Select-String -Path ... -Pattern '^proxies:'`, and a listen port line.
 If only an existing YAML is provided, place it at `C:\ProgramData\mihomo\config.yaml` and validate it has `proxies:` + `external-controller:`.
 
-### 3. Patch (reuse scripts/mihomo-patch.py — it is cross-platform Python)
+### 3. Patch (reuse scripts/shared/mihomo-patch.py — it is cross-platform Python)
 
 ```powershell
 python.exe "C:\ProgramData\mihomo\mihomo-patch.py" "C:\ProgramData\mihomo\config.yaml" | Out-File -Encoding utf8 "C:\ProgramData\mihomo\config.yaml.tmp"
@@ -237,11 +260,11 @@ Move-Item -Force "C:\ProgramData\mihomo\config.yaml.tmp" "C:\ProgramData\mihomo\
 & "C:\ProgramData\mihomo\bin\mihomo.exe" -t -d "C:\ProgramData\mihomo"
 ```
 
-Ship the cross-platform `scripts/` files into `C:\ProgramData\mihomo\` ready-to-run as-is:
-`mihomo-patch.py`, `mihomo-web.py` and `update-mihomo-sub.ps1` require no adaptation. The remaining
-`scripts/` files (`update-mihomo-sub.sh`, `mihomo-board`, `mihomo.service`, `mihomo-web.service`)
-are Linux-only and are NOT copied on Windows. Install a scheduled task for `update-mihomo-sub.ps1`
-instead of cron.
+Copy the files you need from the layout in "Scripts layout" below. On Windows copy only:
+`scripts/shared/` (`mihomo-patch.py`, `mihomo-web.py`) + `scripts/windows/update-mihomo-sub.ps1`,
+all into `C:\ProgramData\mihomo\` ready-to-run as-is (no adaptation). The `scripts/linux/` subtree
+(`update-mihomo-sub.sh`, `mihomo-board`, `mihomo.service`, `mihomo-web.service`) is Linux-only and
+must NOT be copied on Windows. Install a scheduled task for `update-mihomo-sub.ps1` instead of cron.
 
 ### 4. Run + service (NSSM) + scheduled task
 
