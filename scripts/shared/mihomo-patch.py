@@ -35,6 +35,14 @@ INJECT_TUN = {
     "auto-detect-interface": True,
     "dns-hijack": ["any:53"],
     "route-address": ["0.0.0.0/0", "::/0"],
+    "route-exclude-address": [
+        "224.0.0.251/32",
+        "224.0.0.252/32",
+        "255.255.255.255/32",
+        "ff02::fb/128",
+        "ff02::1:3/128",
+        "ff02::1/128",
+    ],
 }
 
 INJECT_SNIFFER = {
